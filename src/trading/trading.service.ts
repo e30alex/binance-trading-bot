@@ -1,4 +1,10 @@
-import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  Inject,
+  forwardRef,
+  OnModuleInit,
+} from '@nestjs/common';
 import { BinanceService } from '../binance/binance.service';
 import { StateService } from '../state/state.service';
 import { DiscordService } from '../discord/discord.service';
@@ -7,7 +13,7 @@ import { BotStateDto } from '../common/dto/bot-state.dto';
 import { NewOrderSpot } from '../common/types/binance.types';
 
 @Injectable()
-export class TradingService {
+export class TradingService implements OnModuleInit {
   private readonly logger = new Logger(TradingService.name);
   private priceMonitorInterval: NodeJS.Timeout | null = null;
   private isMonitoringActive = false;
@@ -18,6 +24,34 @@ export class TradingService {
     @Inject(forwardRef(() => DiscordService))
     private discordService: DiscordService,
   ) {}
+
+  onModuleInit() {
+    // Check if bot was running when app stopped and auto-resume
+    const state = this.stateService.getState();
+
+    if (state.running) {
+      this.logger.log(
+        '🔄 Bot was running before shutdown. Will resume after Discord notification is sent...',
+      );
+
+      // Register callback to start price monitoring after Discord is ready and notification is sent
+      this.discordService.registerOnReadyCallback(() => {
+        this.logger.log(
+          'Starting price monitoring after restart notification...',
+        );
+        this.startPriceMonitorLoop();
+
+        const positionCount = Object.keys(state.positions).length;
+        this.logger.log(
+          `✅ Price monitoring resumed for ${state.params.symbol}${positionCount > 0 ? ` with ${positionCount} open position(s)` : ''}`,
+        );
+      });
+    } else {
+      this.logger.log(
+        'Bot was not running before shutdown. Waiting for /start command.',
+      );
+    }
+  }
 
   start(): void {
     const state = this.stateService.getState();

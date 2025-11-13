@@ -12,7 +12,6 @@ import { StateService } from '../state/state.service';
 import { ParametersDto } from '../common/dto/parameters.dto';
 import { BotStateDto } from '../common/dto/bot-state.dto';
 import { PositionDto } from '../common/dto/position.dto';
-import { DiscordService } from './discord.service';
 
 class SetCoinDto {
   @StringOption({
@@ -51,7 +50,6 @@ export class DiscordCommands {
   constructor(
     private tradingService: TradingService,
     private stateService: StateService,
-    private discordService: DiscordService,
   ) {}
 
   @SlashCommand({
@@ -262,16 +260,4 @@ export class DiscordCommands {
     }
   }
 
-  @SlashCommand({
-    name: 'set_channel',
-    description: 'Set the channel for trade notifications',
-  })
-  async onSetChannel(@Context() [interaction]: SlashCommandContext) {
-    const channelId = interaction.channelId;
-    this.discordService.setNotificationChannel(channelId);
-
-    return interaction.reply(
-      `Trade notifications will be sent to this channel (<#${channelId}>)`,
-    );
-  }
 }
