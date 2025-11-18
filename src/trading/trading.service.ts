@@ -233,21 +233,50 @@ export class TradingService implements OnModuleInit {
     }
 
     if (qty > 0) {
-      const position = new PositionDto(
-        params.symbol,
-        qty,
-        avgPrice,
-        avgPrice,
-        new Date().toISOString(),
-      );
+      // Check if we already have a position for this symbol
+      const existingPosition = state.positions[params.symbol];
 
-      state.positions[params.symbol] = position;
+      if (existingPosition) {
+        // Aggregate positions: combine quantities and calculate weighted average buy price
+        const oldQty = existingPosition.quantity;
+        const oldBuyPrice = existingPosition.buyPrice;
+        const totalQty = existingPosition.quantity + qty;
+        const totalCost =
+          existingPosition.quantity * existingPosition.buyPrice +
+          qty * avgPrice;
+        const weightedAvgPrice = totalCost / totalQty;
+
+        // Update existing position with aggregated values
+        existingPosition.quantity = totalQty;
+        existingPosition.buyPrice = weightedAvgPrice;
+        // Keep the highest price from both positions
+        existingPosition.highestPrice = Math.max(
+          existingPosition.highestPrice,
+          avgPrice,
+        );
+
+        this.logger.log(
+          `Bought ${qty} ${params.symbol} at ${avgPrice}. Aggregated position: ${totalQty} @ ${weightedAvgPrice.toFixed(8)} (was ${oldQty} @ ${oldBuyPrice.toFixed(8)})`,
+        );
+      } else {
+        // Create new position
+        const position = new PositionDto(
+          params.symbol,
+          qty,
+          avgPrice,
+          avgPrice,
+          new Date().toISOString(),
+        );
+
+        state.positions[params.symbol] = position;
+
+        this.logger.log(
+          `Bought ${qty} ${params.symbol} at avg price ${avgPrice}`,
+        );
+      }
+
       state.remainingBudget -= txAmount;
       this.stateService.saveState(state);
-
-      this.logger.log(
-        `Bought ${qty} ${params.symbol} at avg price ${avgPrice}`,
-      );
 
       // Send Discord notification
       await this.discordService.sendBuyNotification({
@@ -308,6 +337,10 @@ export class TradingService implements OnModuleInit {
         'Position not yet in profit; waiting for price above buy price to enable trailing',
       );
     }
+
+    this.logger.debug(
+      'Position not yet in profit; waiting for price above buy price to enable trailing',
+    );
   }
 
   private async executeSell(

@@ -6,11 +6,11 @@ export class ParametersDto {
   allocatedBudget: number; // total budget in quote currency
 
   constructor(
-    symbol: string = 'BTCUSDT',
-    decreasePct: number = 0.02,
-    increasePct: number = 0.03,
-    txAmount: number = 50.0,
-    allocatedBudget: number = 500.0,
+    symbol: string = 'ETHUSDC',
+    decreasePct: number = 0.001,
+    increasePct: number = 0.007,
+    txAmount: number = 200.0,
+    allocatedBudget: number = 2000.0,
   ) {
     this.symbol = symbol;
     this.decreasePct = decreasePct;
