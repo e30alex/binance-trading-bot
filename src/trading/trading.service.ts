@@ -317,26 +317,26 @@ export class TradingService implements OnModuleInit {
     }
 
     // Trailing stop: only engage if price has risen above buy price
-    if (pos.highestPrice > pos.buyPrice) {
-      const trailingStopPrice = pos.highestPrice * (1 - params.decreasePct);
-      const pullbackPct = ((pos.highestPrice - price) / pos.highestPrice) * 100;
+    // if (pos.highestPrice > pos.buyPrice) {
+    //   const trailingStopPrice = pos.highestPrice * (1 - params.decreasePct);
+    //   const pullbackPct = ((pos.highestPrice - price) / pos.highestPrice) * 100;
 
-      this.logger.debug(
-        `📊 Trailing: highest ${pos.highestPrice.toFixed(8)}, stop ${trailingStopPrice.toFixed(8)}, current ${price}, pullback ${pullbackPct.toFixed(2)}%`,
-      );
+    //   this.logger.debug(
+    //     `📊 Trailing: highest ${pos.highestPrice.toFixed(8)}, stop ${trailingStopPrice.toFixed(8)}, current ${price}, pullback ${pullbackPct.toFixed(2)}%`,
+    //   );
 
-      // Ensure we won't sell at a loss
-      if (price <= trailingStopPrice && price >= pos.buyPrice) {
-        this.logger.log(
-          `📈 Trailing stop triggered! Selling ${pos.quantity} ${pos.symbol} at ${price} (bought at ${pos.buyPrice}, profit: ${profitPct.toFixed(2)}%)`,
-        );
-        await this.executeSell(pos, price, state, 'trailing stop');
-      }
-    } else {
-      this.logger.debug(
-        'Position not yet in profit; waiting for price above buy price to enable trailing',
-      );
-    }
+    //   // Ensure we won't sell at a loss
+    //   if (price <= trailingStopPrice && price >= pos.buyPrice) {
+    //     this.logger.log(
+    //       `📈 Trailing stop triggered! Selling ${pos.quantity} ${pos.symbol} at ${price} (bought at ${pos.buyPrice}, profit: ${profitPct.toFixed(2)}%)`,
+    //     );
+    //     await this.executeSell(pos, price, state, 'trailing stop');
+    //   }
+    // } else {
+    //   this.logger.debug(
+    //     'Position not yet in profit; waiting for price above buy price to enable trailing',
+    //   );
+    // }
 
     this.logger.debug(
       'Position not yet in profit; waiting for price above buy price to enable trailing',
