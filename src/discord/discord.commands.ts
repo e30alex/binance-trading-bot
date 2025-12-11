@@ -137,6 +137,24 @@ export class DiscordCommands {
   }
 
   @SlashCommand({
+    name: 'set_commission',
+    description: 'Set the exchange commission percentage',
+  })
+  async onSetCommission(
+    @Context() [interaction]: SlashCommandContext,
+    @Options() { percent }: SetPercentDto,
+  ) {
+    const pct = percent / 100;
+    const state = this.stateService.getState();
+    state.params.commissionPct = pct;
+    this.stateService.saveState(state);
+
+    return interaction.reply(
+      `Commission percentage set to ${percent.toFixed(2)}%`,
+    );
+  }
+
+  @SlashCommand({
     name: 'start',
     description: 'Start the trading bot',
   })
@@ -192,10 +210,14 @@ export class DiscordCommands {
     const state = this.stateService.getState();
     const p = state.params;
 
+    // Initialize commission if it doesn't exist (for backward compatibility)
+    const commission = p.commissionPct !== undefined ? p.commissionPct : 0.001;
+
     const statusMsg = [
       `**Symbol:** ${p.symbol}`,
       `**Decrease (trailing/buy trigger):** ${(p.decreasePct * 100).toFixed(2)}%`,
       `**Increase (profit target):** ${(p.increasePct * 100).toFixed(2)}%`,
+      `**Commission:** ${(commission * 100).toFixed(2)}%`,
       `**Transaction amount:** ${p.txAmount}`,
       `**Allocated budget:** ${p.allocatedBudget}`,
       `**Remaining budget:** ${state.remainingBudget}`,
@@ -245,8 +267,10 @@ export class DiscordCommands {
           (p: PositionDto) =>
             `**${p.symbol}**\n` +
             `  Quantity: ${p.quantity}\n` +
-            `  Buy Price: ${p.buyPrice}\n` +
-            `  Highest: ${p.highestPrice}\n` +
+            `  Avg Buy Price: ${p.buyPrice.toFixed(8)}\n` +
+            `  Last Buy Price: ${p.lastBuyPrice ? p.lastBuyPrice.toFixed(8) : 'N/A'}\n` +
+            `  Total Invested: ${p.totalInvested ? p.totalInvested.toFixed(2) : 'N/A'} USDT\n` +
+            `  Highest: ${p.highestPrice.toFixed(8)}\n` +
             `  Entry Time: ${new Date(p.entryTime).toLocaleString()}`,
         )
         .join('\n\n');

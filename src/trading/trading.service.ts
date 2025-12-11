@@ -142,8 +142,9 @@ export class TradingService implements OnModuleInit {
       // No position: check buy signal
       await this.checkBuySignal(price, state);
     } else {
-      // We have a position: check sell signals
+      // We have a position: check both sell signals AND buy signals (for averaging down)
       await this.checkSellSignals(price, pos, state);
+      await this.checkBuySignal(price, state);
     }
   }
 
@@ -178,6 +179,9 @@ export class TradingService implements OnModuleInit {
       }
       return;
     }
+
+    // REMOVED: No longer preventing buys when position exists
+    // Now we allow multiple buys based on price drops
 
     // Regular buy trigger: price <= last_reference_price * (1 - decrease_pct)
     const buyTriggerPrice =
@@ -246,9 +250,17 @@ export class TradingService implements OnModuleInit {
           qty * avgPrice;
         const weightedAvgPrice = totalCost / totalQty;
 
+        // Initialize totalInvested if it doesn't exist (for backward compatibility)
+        if (existingPosition.totalInvested === undefined) {
+          existingPosition.totalInvested =
+            existingPosition.quantity * existingPosition.buyPrice;
+        }
+
         // Update existing position with aggregated values
         existingPosition.quantity = totalQty;
         existingPosition.buyPrice = weightedAvgPrice;
+        existingPosition.lastBuyPrice = avgPrice; // Track the most recent buy price
+        existingPosition.totalInvested += txAmount; // Add to total invested
         // Keep the highest price from both positions
         existingPosition.highestPrice = Math.max(
           existingPosition.highestPrice,
@@ -256,7 +268,7 @@ export class TradingService implements OnModuleInit {
         );
 
         this.logger.log(
-          `Bought ${qty} ${params.symbol} at ${avgPrice}. Aggregated position: ${totalQty} @ ${weightedAvgPrice.toFixed(8)} (was ${oldQty} @ ${oldBuyPrice.toFixed(8)})`,
+          `Bought ${qty} ${params.symbol} at ${avgPrice}. Aggregated position: ${totalQty} @ ${weightedAvgPrice.toFixed(8)} (was ${oldQty} @ ${oldBuyPrice.toFixed(8)}). Total invested: ${existingPosition.totalInvested.toFixed(2)} USDT`,
         );
       } else {
         // Create new position
@@ -266,16 +278,20 @@ export class TradingService implements OnModuleInit {
           avgPrice,
           avgPrice,
           new Date().toISOString(),
+          avgPrice,
+          txAmount,
         );
 
         state.positions[params.symbol] = position;
 
         this.logger.log(
-          `Bought ${qty} ${params.symbol} at avg price ${avgPrice}`,
+          `Bought ${qty} ${params.symbol} at avg price ${avgPrice}. Total invested: ${txAmount.toFixed(2)} USDT`,
         );
       }
 
       state.remainingBudget -= txAmount;
+      // Update reference price to the buy price so we track drops from here
+      state.lastReferencePrice = avgPrice;
       this.stateService.saveState(state);
 
       // Send Discord notification
@@ -349,21 +365,44 @@ export class TradingService implements OnModuleInit {
     state: BotStateDto,
     reason: string,
   ): Promise<void> {
+    const params = state.params;
     const order = await this.binanceService.marketSell(
       pos.symbol,
       pos.quantity,
     );
 
     if (order) {
-      const profit = (currentPrice - pos.buyPrice) * pos.quantity;
-      const profitPct = ((currentPrice - pos.buyPrice) / pos.buyPrice) * 100;
+      // Calculate actual sell revenue
+      const sellRevenue = currentPrice * pos.quantity;
+
+      // Get commission percentage (default to 0.1% if not set for backward compatibility)
+      const commissionPct = params.commissionPct ?? 0.001;
+
+      // Calculate commission on the sell (buy commission already deducted from quantity)
+      const sellCommission = sellRevenue * commissionPct;
+
+      // Net revenue after sell commission
+      const netRevenue = sellRevenue - sellCommission;
+
+      // Initialize totalInvested if it doesn't exist (for backward compatibility)
+      const totalInvested =
+        pos.totalInvested !== undefined
+          ? pos.totalInvested
+          : pos.quantity * pos.buyPrice;
+
+      // Calculate profit (net revenue minus what we invested)
+      const profit = netRevenue - totalInvested;
+      const profitPct = (profit / totalInvested) * 100;
+
+      // Replenish budget: ONLY add back the invested amount (profit is kept separate, not reinvested)
+      state.remainingBudget += totalInvested;
 
       delete state.positions[pos.symbol];
       state.lastReferencePrice = currentPrice;
       this.stateService.saveState(state);
 
       this.logger.log(
-        `💰 Position closed (${reason}): Profit: ${profit.toFixed(4)} USDT (${profitPct.toFixed(2)}%)`,
+        `💰 Position closed (${reason}): Invested: ${totalInvested.toFixed(2)} USDT, Revenue: ${netRevenue.toFixed(2)} USDT (after ${sellCommission.toFixed(4)} commission), Profit: ${profit.toFixed(4)} USDT (${profitPct.toFixed(2)}%). Budget replenished to: ${state.remainingBudget.toFixed(2)} USDT`,
       );
 
       // Send Discord notification
