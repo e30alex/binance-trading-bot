@@ -41,7 +41,11 @@ export class TradingService implements OnModuleInit {
         );
         this.startPriceMonitorLoop();
 
-        const positionCount = Object.keys(state.positions).length;
+        const allPositions = Object.values(state.positions);
+        const positionCount = allPositions.reduce(
+          (sum, arr) => sum + arr.length,
+          0,
+        );
         this.logger.log(
           `✅ Price monitoring resumed for ${state.params.symbol}${positionCount > 0 ? ` with ${positionCount} open position(s)` : ''}`,
         );
@@ -61,6 +65,8 @@ export class TradingService implements OnModuleInit {
       return;
     }
 
+    // New session: reset session profit counter
+    state.sessionProfit = 0;
     state.running = true;
     this.stateService.saveState(state);
     this.logger.log('Trading bot started');
@@ -115,8 +121,15 @@ export class TradingService implements OnModuleInit {
         state.params.symbol,
       );
       await this.onPrice(price);
-    } catch (error) {
-      this.logger.error('Error in price monitor loop', error);
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        this.logger.error(
+          'Error in price monitor loop',
+          error.stack ?? error.message,
+        );
+      } else {
+        this.logger.error('Error in price monitor loop', JSON.stringify(error));
+      }
     } finally {
       this.isMonitoringActive = false;
     }
@@ -135,15 +148,15 @@ export class TradingService implements OnModuleInit {
       return;
     }
 
-    // Check if we have an open position for this symbol
-    const pos = state.positions[params.symbol];
+    // Check if we have open positions for this symbol
+    const positionsForSymbol = state.positions[params.symbol] ?? [];
 
-    if (!pos) {
+    if (positionsForSymbol.length === 0) {
       // No position: check buy signal
       await this.checkBuySignal(price, state);
     } else {
-      // We have a position: check both sell signals AND buy signals (for averaging down)
-      await this.checkSellSignals(price, pos, state);
+      // We have one or more positions: check sell signals for each AND buy signals (for averaging down)
+      await this.checkSellSignals(price, positionsForSymbol, state);
       await this.checkBuySignal(price, state);
     }
   }
@@ -153,20 +166,40 @@ export class TradingService implements OnModuleInit {
     state: BotStateDto,
   ): Promise<void> {
     const params = state.params;
+    const commissionPct = params.commissionPct ?? 0.001; // Default 0.1% if not set
 
-    // Check if we have sufficient budget
-    if (state.remainingBudget < params.txAmount) {
-      this.logger.log(
-        `Insufficient budget to buy: remaining ${state.remainingBudget}, required ${params.txAmount}`,
+    // Check if price exceeds maximum buy price limit
+    if (
+      params.maxBuyPrice !== undefined &&
+      params.maxBuyPrice !== null &&
+      price > params.maxBuyPrice
+    ) {
+      this.logger.debug(
+        `Price ${price} exceeds max buy price ${params.maxBuyPrice}. Skipping buy signal.`,
       );
       return;
     }
 
-    // If there are no positions at all, buy immediately to start trading
-    const hasAnyPositions = Object.keys(state.positions).length > 0;
-    if (!hasAnyPositions) {
+    // Check if we have sufficient budget (include estimated buy-side commission)
+    const estimatedTotalCost = params.txAmount * (1 + commissionPct);
+
+    if (state.remainingBudget < estimatedTotalCost) {
       this.logger.log(
-        `🎯 Initial buy: No positions in portfolio. Buying at current market price ${price}`,
+        `Insufficient budget to buy: remaining ${state.remainingBudget.toFixed(2)}, required (including commission) ${estimatedTotalCost.toFixed(2)}`,
+      );
+      return;
+    }
+
+    // Positions for the current symbol
+    const positionsForSymbol =
+      (state.positions[params.symbol] as PositionDto[] | undefined) ?? [];
+    const hasOpenForSymbol = positionsForSymbol.length > 0;
+
+    // If there are no open positions for this symbol, always place a new buy
+    // (initial trade or after all previous positions have been closed)
+    if (!hasOpenForSymbol) {
+      this.logger.log(
+        `🎯 No open positions for ${params.symbol}. Buying at current market price ${price}`,
       );
 
       const order = await this.binanceService.marketBuy(
@@ -180,16 +213,15 @@ export class TradingService implements OnModuleInit {
       return;
     }
 
-    // REMOVED: No longer preventing buys when position exists
-    // Now we allow multiple buys based on price drops
+    // Regular buy trigger when we already have an open position:
+    // use lastReferencePrice as the anchor for further buys (averaging down)
+    const referencePrice = state.lastReferencePrice ?? price;
 
-    // Regular buy trigger: price <= last_reference_price * (1 - decrease_pct)
-    const buyTriggerPrice =
-      (state.lastReferencePrice ?? price) * (1 - params.decreasePct);
+    const buyTriggerPrice = referencePrice * (1 - params.decreasePct);
 
     if (price <= buyTriggerPrice) {
       this.logger.log(
-        `📉 Buy signal: price ${price} dropped by ${(params.decreasePct * 100).toFixed(2)}% from reference ${state.lastReferencePrice ?? price}`,
+        `📉 Buy signal: price ${price} dropped by ${(params.decreasePct * 100).toFixed(2)}% from reference ${referencePrice}`,
       );
 
       const order = await this.binanceService.marketBuy(
@@ -201,7 +233,7 @@ export class TradingService implements OnModuleInit {
         await this.processBuyOrder(order, params.txAmount, state);
       }
     } else {
-      // Update reference price if price moved higher
+      // Update reference price if price moved higher while we have an open position
       if (
         state.lastReferencePrice === null ||
         price > state.lastReferencePrice
@@ -218,10 +250,12 @@ export class TradingService implements OnModuleInit {
     state: BotStateDto,
   ): Promise<void> {
     const params = state.params;
+    const commissionPct = params.commissionPct ?? 0.001; // Default 0.1% if not set
 
     // Calculate average price and quantity from order
     let qty = 0;
     let avgPrice = 0;
+    let quoteSpent = txAmount;
 
     if (order.fills && order.fills.length > 0) {
       qty = order.fills.reduce((sum, fill) => sum + parseFloat(fill.qty), 0);
@@ -232,65 +266,44 @@ export class TradingService implements OnModuleInit {
       avgPrice = totalValue / qty;
     } else {
       qty = parseFloat(order.executedQty || '0');
-      const cumulativeQuoteQty = parseFloat(order.cummulativeQuoteQty || '0');
-      avgPrice = qty > 0 ? cumulativeQuoteQty / qty : 0;
     }
 
+    // Prefer actual quote amount from order if available
+    const cumulativeQuoteQty = parseFloat(order.cummulativeQuoteQty || '0');
+    if (!isNaN(cumulativeQuoteQty) && cumulativeQuoteQty > 0 && qty > 0) {
+      quoteSpent = cumulativeQuoteQty;
+      avgPrice = cumulativeQuoteQty / qty;
+    }
+
+    // Estimate buy-side commission and total invested for this order
+    const buyCommission = quoteSpent * commissionPct;
+    const investedAmount = quoteSpent + buyCommission;
+
     if (qty > 0) {
-      // Check if we already have a position for this symbol
-      const existingPosition = state.positions[params.symbol];
+      // Create a new independent position (do not aggregate with previous buys)
+      const position = new PositionDto(
+        params.symbol,
+        qty,
+        avgPrice,
+        avgPrice,
+        new Date().toISOString(),
+        avgPrice,
+        investedAmount,
+      );
 
-      if (existingPosition) {
-        // Aggregate positions: combine quantities and calculate weighted average buy price
-        const oldQty = existingPosition.quantity;
-        const oldBuyPrice = existingPosition.buyPrice;
-        const totalQty = existingPosition.quantity + qty;
-        const totalCost =
-          existingPosition.quantity * existingPosition.buyPrice +
-          qty * avgPrice;
-        const weightedAvgPrice = totalCost / totalQty;
+      const positionsForSymbol =
+        (state.positions[params.symbol] as PositionDto[] | undefined) ?? [];
+      positionsForSymbol.push(position);
+      state.positions[params.symbol] = positionsForSymbol;
 
-        // Initialize totalInvested if it doesn't exist (for backward compatibility)
-        if (existingPosition.totalInvested === undefined) {
-          existingPosition.totalInvested =
-            existingPosition.quantity * existingPosition.buyPrice;
-        }
+      this.logger.log(
+        `Bought ${qty} ${params.symbol} at avg price ${avgPrice}. New position #${positionsForSymbol.length} opened. Total invested (incl. buy fee): ${investedAmount.toFixed(2)} USDT`,
+      );
 
-        // Update existing position with aggregated values
-        existingPosition.quantity = totalQty;
-        existingPosition.buyPrice = weightedAvgPrice;
-        existingPosition.lastBuyPrice = avgPrice; // Track the most recent buy price
-        existingPosition.totalInvested += txAmount; // Add to total invested
-        // Keep the highest price from both positions
-        existingPosition.highestPrice = Math.max(
-          existingPosition.highestPrice,
-          avgPrice,
-        );
-
-        this.logger.log(
-          `Bought ${qty} ${params.symbol} at ${avgPrice}. Aggregated position: ${totalQty} @ ${weightedAvgPrice.toFixed(8)} (was ${oldQty} @ ${oldBuyPrice.toFixed(8)}). Total invested: ${existingPosition.totalInvested.toFixed(2)} USDT`,
-        );
-      } else {
-        // Create new position
-        const position = new PositionDto(
-          params.symbol,
-          qty,
-          avgPrice,
-          avgPrice,
-          new Date().toISOString(),
-          avgPrice,
-          txAmount,
-        );
-
-        state.positions[params.symbol] = position;
-
-        this.logger.log(
-          `Bought ${qty} ${params.symbol} at avg price ${avgPrice}. Total invested: ${txAmount.toFixed(2)} USDT`,
-        );
-      }
-
-      state.remainingBudget -= txAmount;
-      // Update reference price to the buy price so we track drops from here
+      // Deduct quote spent + estimated buy-side commission from budget
+      state.remainingBudget -= investedAmount;
+      // Track last buy price and update reference price so we track drops from here
+      state.lastPositionBuyPrice = avgPrice;
       state.lastReferencePrice = avgPrice;
       this.stateService.saveState(state);
 
@@ -311,25 +324,36 @@ export class TradingService implements OnModuleInit {
 
   private async checkSellSignals(
     price: number,
-    pos: PositionDto,
+    positions: PositionDto[],
     state: BotStateDto,
   ): Promise<void> {
     const params = state.params;
 
-    // Update highest price
-    pos.highestPrice = Math.max(pos.highestPrice, price);
+    if (!positions || positions.length === 0) {
+      this.logger.debug('No positions for symbol; skipping sell checks');
+      return;
+    }
+
+    // Update highest price for all positions
+    for (const p of positions) {
+      p.highestPrice = Math.max(p.highestPrice, price);
+    }
     this.stateService.saveState(state);
 
-    // Check profit target
-    const targetPrice = pos.buyPrice * (1 + params.increasePct);
-    const profitPct = ((price - pos.buyPrice) / pos.buyPrice) * 100;
+    let anySold = false;
 
-    if (price >= targetPrice) {
-      this.logger.log(
-        `🎯 Profit target reached! Selling ${pos.quantity} ${pos.symbol} at ${price} (bought at ${pos.buyPrice}, profit: ${profitPct.toFixed(2)}%)`,
-      );
-      await this.executeSell(pos, price, state, 'profit target');
-      return;
+    // Check profit target for each independent position
+    for (const p of [...positions]) {
+      const targetPrice = p.buyPrice * (1 + params.increasePct);
+      const profitPct = ((price - p.buyPrice) / p.buyPrice) * 100;
+
+      if (price >= targetPrice) {
+        this.logger.log(
+          `🎯 Profit target reached! Selling ${p.quantity} ${p.symbol} at ${price} (bought at ${p.buyPrice}, profit: ${profitPct.toFixed(2)}%)`,
+        );
+        await this.executeSell(p, price, state, 'profit target');
+        anySold = true;
+      }
     }
 
     // Trailing stop: only engage if price has risen above buy price
@@ -354,9 +378,11 @@ export class TradingService implements OnModuleInit {
     //   );
     // }
 
-    this.logger.debug(
-      'Position not yet in profit; waiting for price above buy price to enable trailing',
-    );
+    if (!anySold) {
+      this.logger.debug(
+        'Position(s) not yet in profit; waiting for price above buy price to enable trailing',
+      );
+    }
   }
 
   private async executeSell(
@@ -372,13 +398,17 @@ export class TradingService implements OnModuleInit {
     );
 
     if (order) {
-      // Calculate actual sell revenue
-      const sellRevenue = currentPrice * pos.quantity;
+      // Calculate actual sell revenue (prefer Binance-reported quote quantity)
+      let sellRevenue = currentPrice * pos.quantity;
+      const cumulativeQuoteQty = parseFloat(order.cummulativeQuoteQty ?? '0');
+      if (!isNaN(cumulativeQuoteQty) && cumulativeQuoteQty > 0) {
+        sellRevenue = cumulativeQuoteQty;
+      }
 
       // Get commission percentage (default to 0.1% if not set for backward compatibility)
       const commissionPct = params.commissionPct ?? 0.001;
 
-      // Calculate commission on the sell (buy commission already deducted from quantity)
+      // Calculate commission on the sell (buy-side commission already accounted for in totalInvested)
       const sellCommission = sellRevenue * commissionPct;
 
       // Net revenue after sell commission
@@ -394,10 +424,26 @@ export class TradingService implements OnModuleInit {
       const profit = netRevenue - totalInvested;
       const profitPct = (profit / totalInvested) * 100;
 
+      // Accumulate session profit (net of all commissions)
+      state.sessionProfit = Number(state.sessionProfit || 0) + profit;
+
+      // Persist the latest buy price from the closed position for future re-entry logic
+      state.lastPositionBuyPrice = pos.lastBuyPrice ?? pos.buyPrice;
+
       // Replenish budget: ONLY add back the invested amount (profit is kept separate, not reinvested)
       state.remainingBudget += totalInvested;
 
-      delete state.positions[pos.symbol];
+      // Remove only this specific position from the symbol's list
+      const existingPositions =
+        (state.positions[pos.symbol] as PositionDto[] | undefined) ?? [];
+      const remainingPositions = existingPositions.filter((p) => p !== pos);
+
+      if (remainingPositions.length > 0) {
+        state.positions[pos.symbol] = remainingPositions;
+      } else {
+        delete state.positions[pos.symbol];
+      }
+
       state.lastReferencePrice = currentPrice;
       this.stateService.saveState(state);
 
@@ -412,7 +458,7 @@ export class TradingService implements OnModuleInit {
         status: order.status,
         executedQty: order.executedQty ?? '0',
         cummulativeQuoteQty: order.cummulativeQuoteQty ?? '0',
-        avgPrice: currentPrice,
+        avgPrice: sellRevenue > 0 ? sellRevenue / pos.quantity : currentPrice,
         fills: order.fills?.length || 0,
         profit: profit,
         profitPct: profitPct,

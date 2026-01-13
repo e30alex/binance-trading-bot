@@ -16,16 +16,29 @@ interface RawStateJson {
   };
   positions?: Record<
     string,
-    {
-      symbol: string;
-      quantity: number;
-      buyPrice: number;
-      highestPrice: number;
-      entryTime: string;
-    }
+    | {
+        symbol: string;
+        quantity: number;
+        buyPrice: number;
+        highestPrice: number;
+        entryTime: string;
+        lastBuyPrice?: number;
+        totalInvested?: number;
+      }
+    | {
+        symbol: string;
+        quantity: number;
+        buyPrice: number;
+        highestPrice: number;
+        entryTime: string;
+        lastBuyPrice?: number;
+        totalInvested?: number;
+      }[]
   >;
   remainingBudget?: number;
   lastReferencePrice?: number | null;
+  lastPositionBuyPrice?: number | null;
+  sessionProfit?: number;
   running?: boolean;
 }
 
@@ -58,20 +71,38 @@ export class StateService {
           raw.params?.allocatedBudget,
         );
 
-        const positions: Record<string, PositionDto> = {};
+        const positions: Record<string, PositionDto[]> = {};
         if (raw.positions) {
           Object.keys(raw.positions).forEach((key) => {
-            const p = raw.positions?.[key];
+            const rawPosOrArray = raw.positions?.[key];
 
-            if (!p) return;
+            if (!rawPosOrArray) return;
 
-            positions[key] = new PositionDto(
-              p.symbol,
-              p.quantity,
-              p.buyPrice,
-              p.highestPrice,
-              p.entryTime,
-            );
+            const toDto = (p: {
+              symbol: string;
+              quantity: number;
+              buyPrice: number;
+              highestPrice: number;
+              entryTime: string;
+              lastBuyPrice?: number;
+              totalInvested?: number;
+            }) =>
+              new PositionDto(
+                p.symbol,
+                p.quantity,
+                p.buyPrice,
+                p.highestPrice,
+                p.entryTime,
+                p.lastBuyPrice ?? p.buyPrice,
+                p.totalInvested ?? p.quantity * p.buyPrice,
+              );
+
+            if (Array.isArray(rawPosOrArray)) {
+              positions[key] = rawPosOrArray.map(toDto);
+            } else {
+              // Backward compatibility: single position object becomes a 1-element array
+              positions[key] = [toDto(rawPosOrArray)];
+            }
           });
         }
 
@@ -80,6 +111,8 @@ export class StateService {
         state.remainingBudget = raw.remainingBudget ?? params.allocatedBudget;
         state.positions = positions;
         state.lastReferencePrice = raw.lastReferencePrice ?? null;
+        state.lastPositionBuyPrice = raw.lastPositionBuyPrice ?? null;
+        state.sessionProfit = raw.sessionProfit ?? 0;
         state.running = raw.running ?? false;
 
         this.logger.log('State loaded from file');
@@ -111,6 +144,8 @@ export class StateService {
       remainingBudget: stateToSave.remainingBudget,
       positions: stateToSave.positions,
       lastReferencePrice: stateToSave.lastReferencePrice,
+      lastPositionBuyPrice: stateToSave.lastPositionBuyPrice,
+      sessionProfit: stateToSave.sessionProfit,
       running: stateToSave.running,
     };
 

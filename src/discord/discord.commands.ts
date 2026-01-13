@@ -155,6 +155,33 @@ export class DiscordCommands {
   }
 
   @SlashCommand({
+    name: 'set_max_price',
+    description: 'Set the maximum price at which to allow buy orders',
+  })
+  async onSetMaxPrice(
+    @Context() [interaction]: SlashCommandContext,
+    @Options() { amount }: SetAmountDto,
+  ) {
+    const state = this.stateService.getState();
+    state.params.maxBuyPrice = amount;
+    this.stateService.saveState(state);
+
+    return interaction.reply(`Maximum buy price set to ${amount}`);
+  }
+
+  @SlashCommand({
+    name: 'clear_max_price',
+    description: 'Clear the maximum buy price limit',
+  })
+  async onClearMaxPrice(@Context() [interaction]: SlashCommandContext) {
+    const state = this.stateService.getState();
+    state.params.maxBuyPrice = undefined;
+    this.stateService.saveState(state);
+
+    return interaction.reply('Maximum buy price limit cleared');
+  }
+
+  @SlashCommand({
     name: 'start',
     description: 'Start the trading bot',
   })
@@ -219,8 +246,12 @@ export class DiscordCommands {
       `**Increase (profit target):** ${(p.increasePct * 100).toFixed(2)}%`,
       `**Commission:** ${(commission * 100).toFixed(2)}%`,
       `**Transaction amount:** ${p.txAmount}`,
+      `**Max buy price:** ${p.maxBuyPrice !== undefined && p.maxBuyPrice !== null ? p.maxBuyPrice : 'None'}`,
       `**Allocated budget:** ${p.allocatedBudget}`,
       `**Remaining budget:** ${state.remainingBudget}`,
+      `**Session profit (since last /start):** ${Number(
+        state.sessionProfit || 0,
+      ).toFixed(4)} USDT`,
       `**Positions:** ${Object.keys(state.positions).join(', ') || 'None'}`,
       `**Running:** ${state.running ? 'Yes' : 'No'}`,
     ].join('\n');
@@ -238,6 +269,7 @@ export class DiscordCommands {
     state.remainingBudget = state.params.allocatedBudget;
     state.positions = {};
     state.lastReferencePrice = null;
+    state.sessionProfit = 0;
     state.running = false;
     this.stateService.setState(state);
 
@@ -256,7 +288,11 @@ export class DiscordCommands {
 
       // This would require adding a method to binance.service.ts to get trade history
       // For now, show position info
-      const positions = Object.values(state.positions);
+      const positionsArrays = Object.values(state.positions);
+      const positions = positionsArrays.reduce(
+        (all, arr) => all.concat(arr),
+        [] as PositionDto[],
+      );
 
       if (positions.length === 0) {
         return interaction.editReply('No open positions');
@@ -268,8 +304,12 @@ export class DiscordCommands {
             `**${p.symbol}**\n` +
             `  Quantity: ${p.quantity}\n` +
             `  Avg Buy Price: ${p.buyPrice.toFixed(8)}\n` +
-            `  Last Buy Price: ${p.lastBuyPrice ? p.lastBuyPrice.toFixed(8) : 'N/A'}\n` +
-            `  Total Invested: ${p.totalInvested ? p.totalInvested.toFixed(2) : 'N/A'} USDT\n` +
+            `  Last Buy Price: ${
+              p.lastBuyPrice ? p.lastBuyPrice.toFixed(8) : 'N/A'
+            }\n` +
+            `  Total Invested: ${
+              p.totalInvested ? p.totalInvested.toFixed(2) : 'N/A'
+            } USDT\n` +
             `  Highest: ${p.highestPrice.toFixed(8)}\n` +
             `  Entry Time: ${new Date(p.entryTime).toLocaleString()}`,
         )
@@ -283,5 +323,4 @@ export class DiscordCommands {
       return interaction.editReply('Failed to fetch history');
     }
   }
-
 }
