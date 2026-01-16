@@ -17,8 +17,6 @@ export class BinanceService implements OnModuleDestroy {
     const apiSecret = this.configService.get<string>('binance.apiSecret');
     const testnet = this.configService.get<boolean>('binance.testnet');
 
-    console.log('testnet', testnet, apiKey, apiSecret);
-
     if (!apiKey || !apiSecret) {
       throw new Error(
         'BINANCE_API_KEY and BINANCE_API_SECRET must be set as environment variables',
