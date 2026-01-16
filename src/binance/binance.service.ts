@@ -1,15 +1,24 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Spot, SpotRestAPI, SPOT_REST_API_TESTNET_URL } from '@binance/spot';
 import { NewOrderSpot } from '../common/types/binance.types';
 
 @Injectable()
-export class BinanceService implements OnModuleDestroy {
+export class BinanceService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(BinanceService.name);
   private client: Spot;
 
   constructor(private configService: ConfigService) {
     this.initializeClient();
+  }
+
+  async onModuleInit() {
+    await this.testApiKey();
   }
 
   private initializeClient() {
@@ -136,8 +145,12 @@ export class BinanceService implements OnModuleDestroy {
       );
 
       return order as NewOrderSpot;
-    } catch (error) {
-      this.logger.error(`Error placing buy order for ${symbol}`, error);
+    } catch (error: unknown) {
+      const err = error as { code?: number; message?: string };
+      this.logger.error(
+        `Error placing buy order for ${symbol} - Code: ${err.code}, Message: ${err.message}`,
+        error,
+      );
       return null;
     }
   }
@@ -206,6 +219,23 @@ export class BinanceService implements OnModuleDestroy {
     } catch (error) {
       this.logger.error(`Error placing sell order for ${symbol}`, error);
       return null;
+    }
+  }
+
+  // Test API key permissions on startup
+  async testApiKey(): Promise<void> {
+    try {
+      // This endpoint requires a valid API key with read permissions
+      const response = await this.client.restAPI.getAccount();
+      const account = await response.data();
+      this.logger.log(
+        `✅ API Key valid! Account type: ${account.accountType}, Can trade: ${account.canTrade}`,
+      );
+    } catch (error: unknown) {
+      const err = error as { code?: number; message?: string };
+      this.logger.error(
+        `❌ API Key test failed - Code: ${err.code}, Message: ${err.message}`,
+      );
     }
   }
 
