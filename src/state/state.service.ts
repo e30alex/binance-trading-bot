@@ -150,7 +150,18 @@ export class StateService {
     };
 
     try {
-      fs.writeFileSync(stateFilePath, JSON.stringify(serializable, null, 2));
+      // Use replacer to preserve up to 10 decimal places for numbers
+      const replacer = (_key: string, value: unknown) => {
+        if (typeof value === 'number') {
+          // Preserve up to 10 decimal places
+          return parseFloat(value.toFixed(10));
+        }
+        return value;
+      };
+      fs.writeFileSync(
+        stateFilePath,
+        JSON.stringify(serializable, replacer, 2),
+      );
       this.logger.debug('State saved to file');
     } catch (error) {
       this.logger.error('Error saving state file', error);

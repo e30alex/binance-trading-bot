@@ -272,7 +272,13 @@ export class TradingService implements OnModuleInit {
     const cumulativeQuoteQty = parseFloat(order.cummulativeQuoteQty || '0');
     if (!isNaN(cumulativeQuoteQty) && cumulativeQuoteQty > 0 && qty > 0) {
       quoteSpent = cumulativeQuoteQty;
-      avgPrice = cumulativeQuoteQty / qty;
+      // Calculate more precise quantity from quote spent / price
+      // This gives us better precision than Binance's rounded executedQty
+      if (avgPrice > 0) {
+        qty = cumulativeQuoteQty / avgPrice;
+      } else {
+        avgPrice = cumulativeQuoteQty / qty;
+      }
     }
 
     // Estimate buy-side commission and total invested for this order
